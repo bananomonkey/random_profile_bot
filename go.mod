@@ -4,6 +4,7 @@ go 1.24.4
 
 require (
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
+	golang.org/x/image v0.24.0
 	modernc.org/sqlite v1.38.2
 )
 
