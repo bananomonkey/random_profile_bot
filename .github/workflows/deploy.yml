@@ -1,0 +1,16 @@
+name: Deploy to BotHost
+
+on:
+  push:
+    branches:
+      - main # Укажи свою ветку (main или master)
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger BotHost Auto-Deploy
+        run: |
+          curl -X POST "https://gw.bothost.ru/nl5/api/webhooks/github" \
+            -H "Authorization: Bearer ${{ secrets.BOTHOST_TOKEN }}" \
+            -H "Content-Type: application/json"
