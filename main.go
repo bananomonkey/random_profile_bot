@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"log"
 	"math/rand"
 	"net/http"
@@ -12,9 +16,14 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"golang.org/x/image/draw"
+	"golang.org/x/image/font"
+	"golang.org/x/image/font/basicfont"
+	"golang.org/x/image/math/fixed"
 	_ "modernc.org/sqlite"
 )
 
@@ -427,6 +436,38 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, callback *tgbotapi.Callbac
 	switch callback.Data {
 	case "generate_profile":
 		generateAndSendProfile(bot, db, chatID, userID)
+
+	case "generate_pass":
+		// Получаем сохраненный профиль пользователя
+		profilesMutex.RLock()
+		profile, exists := lastProfiles[userID]
+		profilesMutex.RUnlock()
+
+		if !exists {
+			alert := tgbotapi.NewCallbackWithAlert(callback.ID, "Профиль не найден! Сгенерируйте новый.")
+			_, _ = bot.Request(alert)
+			return
+		}
+
+		// Генерируем пропуск в байты
+		passBytes, err := GeneratePassImage(profile)
+		if err != nil {
+			log.Printf("ошибка генерации пропуска: %v", err)
+			return
+		}
+
+		// Отправляем готовый пропуск отдельным фото
+		fileBytes := tgbotapi.FileBytes{
+			Name:  "pass.png",
+			Bytes: passBytes,
+		}
+		photo := tgbotapi.NewPhoto(chatID, fileBytes)
+		photo.Caption = fmt.Sprintf("🎫 *Пропуск для %s %s*", escapeMD(profile.FirstName), escapeMD(profile.LastName))
+		photo.ParseMode = tgbotapi.ModeMarkdownV2
+		if _, err := bot.Send(photo); err != nil {
+			log.Printf("send pass image error: %v", err)
+		}
+
 	case "settings":
 		style, err := getUserStyle(db, userID)
 		if err != nil {
@@ -479,18 +520,24 @@ func generateAndSendProfile(bot *tgbotapi.BotAPI, db *sql.DB, chatID, userID int
 	}
 
 	profile := generateProfile(style)
+
+	// Сохраняем профиль пользователя в памяти для генерации пропуска
+	profilesMutex.Lock()
+	lastProfiles[userID] = profile
+	profilesMutex.Unlock()
+
 	caption := formatProfile(profile)
 
 	photo := tgbotapi.NewPhoto(chatID, tgbotapi.FileURL(profile.AvatarURL))
 	photo.Caption = caption
 	photo.ParseMode = tgbotapi.ModeMarkdownV2
-	photo.ReplyMarkup = mainKeyboard()
+	photo.ReplyMarkup = profileKeyboard() // Клавиатура с кнопкой "Сгенерировать пропуск"
 
 	if _, err := bot.Send(photo); err != nil {
 		log.Printf("send profile photo: %v", err)
 		msg := tgbotapi.NewMessage(chatID, caption)
 		msg.ParseMode = tgbotapi.ModeMarkdownV2
-		msg.ReplyMarkup = mainKeyboard()
+		msg.ReplyMarkup = profileKeyboard()
 		if _, sendErr := bot.Send(msg); sendErr != nil {
 			log.Printf("send profile text fallback: %v", sendErr)
 		}
@@ -502,6 +549,25 @@ func menuMessage(chatID int64) tgbotapi.MessageConfig {
 	msg.ParseMode = tgbotapi.ModeMarkdownV2
 	msg.ReplyMarkup = mainKeyboard()
 	return msg
+}
+
+// Хранилище последних сгенерированных профилей для пользователей
+var (
+	profilesMutex sync.RWMutex
+	lastProfiles  = make(map[int64]Profile)
+)
+
+// Клавиатура, которая прикрепляется к сгенерированному профилю
+func profileKeyboard() tgbotapi.InlineKeyboardMarkup {
+	return tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🎫 Сгенерировать пропуск", "generate_pass"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🔄 Сгенерировать ещё", "generate_profile"),
+			tgbotapi.NewInlineKeyboardButtonData("⚙️ Настройки", "settings"),
+		),
+	)
 }
 
 func mainKeyboard() tgbotapi.InlineKeyboardMarkup {
@@ -1166,4 +1232,99 @@ func escapeMD(s string) string {
 
 func escapeCode(s string) string {
 	return strings.NewReplacer("\\", "\\\\", "`", "\\`").Replace(s)
+}
+
+// --- Генерация изображения пропуска ---
+
+func GeneratePassImage(p Profile) ([]byte, error) {
+	width, height := 600, 380
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+
+	bgColor := color.RGBA{24, 28, 36, 255}
+	draw.Draw(img, img.Bounds(), &image.Uniform{bgColor}, image.Point{}, draw.Src)
+
+	headerColor := color.RGBA{41, 128, 185, 255}
+	draw.Draw(img, image.Rect(0, 0, width, 55), &image.Uniform{headerColor}, image.Point{}, draw.Src)
+
+	borderColor := color.RGBA{60, 64, 72, 255}
+	for x := 0; x < width; x++ {
+		img.Set(x, 0, borderColor)
+		img.Set(x, height-1, borderColor)
+	}
+	for y := 0; y < height; y++ {
+		img.Set(0, y, borderColor)
+		img.Set(width-1, y, borderColor)
+	}
+
+	if p.AvatarURL != "" {
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, err := client.Get(p.AvatarURL)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			avatarImg, _, err := image.Decode(resp.Body)
+			resp.Body.Close()
+			if err == nil {
+				avatarRect := image.Rect(25, 80, 185, 240)
+				draw.ApproxBiLinear.Scale(img, avatarRect, avatarImg, avatarImg.Bounds(), draw.Over, nil)
+			}
+		}
+	}
+
+	drawOutline(img, image.Rect(23, 78, 187, 242), color.RGBA{0, 230, 118, 255}, 2)
+
+	addText(img, 15, 35, "SECURITY PASS", color.White)
+	addText(img, 420, 35, "ID: "+p.Passport, color.White)
+
+	addText(img, 210, 100, "ФИО: "+transliterate(p.LastName)+" "+transliterate(p.FirstName), color.White)
+	addText(img, 210, 130, "ГОРОД: "+transliterate(p.City), color.RGBA{180, 190, 200, 255})
+	addText(img, 210, 160, "ПОЗЫВНОЙ: "+p.Callsign, color.RGBA{255, 215, 0, 255})
+	addText(img, 210, 190, "КРОВЬ: "+p.Blood, color.RGBA{231, 76, 60, 255})
+	addText(img, 210, 220, "ДОСТУП: LEVEL 3 (RESTRICTED)", color.RGBA{46, 204, 113, 255})
+
+	drawBarcode(img, 25, 280, 550, 60)
+
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func drawOutline(img *image.RGBA, rect image.Rectangle, col color.Color, thickness int) {
+	for t := 0; t < thickness; t++ {
+		for x := rect.Min.X - t; x <= rect.Max.X+t; x++ {
+			img.Set(x, rect.Min.Y-t, col)
+			img.Set(x, rect.Max.Y+t, col)
+		}
+		for y := rect.Min.Y - t; y <= rect.Max.Y+t; y++ {
+			img.Set(rect.Min.X-t, y, col)
+			img.Set(rect.Max.X+t, y, col)
+		}
+	}
+}
+
+func addText(img *image.RGBA, x, y int, label string, col color.Color) {
+	point := fixed.Point26_6{X: fixed.I(x), Y: fixed.I(y)}
+	d := &font.Drawer{
+		Dst:  img,
+		Src:  image.NewUniform(col),
+		Face: basicfont.Face7x13,
+		Dot:  point,
+	}
+	d.DrawString(label)
+}
+
+func drawBarcode(img *image.RGBA, x, y, width, height int) {
+	barColor := color.RGBA{240, 240, 240, 255}
+	bgColor := color.RGBA{10, 12, 16, 255}
+
+	draw.Draw(img, image.Rect(x, y, x+width, y+height), &image.Uniform{bgColor}, image.Point{}, draw.Src)
+
+	currX := x + 15
+	for currX < (x + width - 20) {
+		w := rand.Intn(4) + 1
+		if rand.Intn(2) == 1 {
+			draw.Draw(img, image.Rect(currX, y+8, currX+w, y+height-8), &image.Uniform{barColor}, image.Point{}, draw.Src)
+		}
+		currX += w + rand.Intn(3) + 1
+	}
 }
