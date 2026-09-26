@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	_ "image/jpeg"
 	"image/png"
 	"log"
 	"math/rand"
@@ -1256,29 +1257,37 @@ func GeneratePassImage(p Profile) ([]byte, error) {
 		img.Set(width-1, y, borderColor)
 	}
 
+	// Загружаем аватар с заголовком User-Agent
 	if p.AvatarURL != "" {
-		client := &http.Client{Timeout: 5 * time.Second}
-		resp, err := client.Get(p.AvatarURL)
-		if err == nil && resp.StatusCode == http.StatusOK {
-			avatarImg, _, err := image.Decode(resp.Body)
-			resp.Body.Close()
-			if err == nil {
-				avatarRect := image.Rect(25, 80, 185, 240)
-				draw.ApproxBiLinear.Scale(img, avatarRect, avatarImg, avatarImg.Bounds(), draw.Over, nil)
+		client := &http.Client{Timeout: 7 * time.Second}
+		req, err := http.NewRequest("GET", p.AvatarURL, nil)
+		if err == nil {
+			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+			resp, err := client.Do(req)
+			if err == nil && resp.StatusCode == http.StatusOK {
+				defer resp.Body.Close()
+				avatarImg, _, err := image.Decode(resp.Body)
+				if err == nil {
+					avatarRect := image.Rect(25, 80, 185, 240)
+					draw.ApproxBiLinear.Scale(img, avatarRect, avatarImg, avatarImg.Bounds(), draw.Over, nil)
+				} else {
+					log.Printf("ошибка декодирования аватара: %v", err)
+				}
 			}
 		}
 	}
 
 	drawOutline(img, image.Rect(23, 78, 187, 242), color.RGBA{0, 230, 118, 255}, 2)
 
+	// Все надписи сделаны на латинице, чтобы basicfont мог их корректно отрисовать
 	addText(img, 15, 35, "SECURITY PASS", color.White)
 	addText(img, 420, 35, "ID: "+p.Passport, color.White)
 
-	addText(img, 210, 100, "ФИО: "+transliterate(p.LastName)+" "+transliterate(p.FirstName), color.White)
-	addText(img, 210, 130, "ГОРОД: "+transliterate(p.City), color.RGBA{180, 190, 200, 255})
-	addText(img, 210, 160, "ПОЗЫВНОЙ: "+p.Callsign, color.RGBA{255, 215, 0, 255})
-	addText(img, 210, 190, "КРОВЬ: "+p.Blood, color.RGBA{231, 76, 60, 255})
-	addText(img, 210, 220, "ДОСТУП: LEVEL 3 (RESTRICTED)", color.RGBA{46, 204, 113, 255})
+	addText(img, 210, 100, "NAME: "+transliterate(p.LastName)+" "+transliterate(p.FirstName), color.White)
+	addText(img, 210, 130, "CITY: "+transliterate(p.City), color.RGBA{180, 190, 200, 255})
+	addText(img, 210, 160, "CALLSIGN: "+transliterate(p.Callsign), color.RGBA{255, 215, 0, 255})
+	addText(img, 210, 190, "BLOOD: "+p.Blood, color.RGBA{231, 76, 60, 255})
+	addText(img, 210, 220, "CLEARANCE: LEVEL 3 (RESTRICTED)", color.RGBA{46, 204, 113, 255})
 
 	drawBarcode(img, 25, 280, 550, 60)
 
