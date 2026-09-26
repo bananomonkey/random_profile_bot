@@ -21,9 +21,12 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/skip2/go-qrcode"
 	"golang.org/x/image/draw"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/basicfont"
+	"golang.org/x/image/font/gofont/goregular"
+	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/math/fixed"
 	_ "modernc.org/sqlite"
 )
@@ -35,6 +38,10 @@ const (
 	styleRobots   = "robots"
 	styleInitials = "initials"
 	styleBoring   = "boring"
+
+	themeCyber    = "cyber"
+	themeMilitary = "military"
+	themeCorp     = "corp"
 
 	fakeNamelyURL = "https://fakenamely.com/api/v1/identity"
 	randomUserURL = "https://randomuser.me/api/"
@@ -354,6 +361,21 @@ func main() {
 	}
 	log.Printf("authorized as @%s", bot.Self.UserName)
 
+	// Фоновое удаление устаревших профилей из памяти
+	startProfileCleaner()
+
+	// Регистрируем меню команд в левом нижнем углу Telegram
+	cmdConfig := tgbotapi.NewSetMyCommands(
+		tgbotapi.BotCommand{Command: "start", Description: "🚀 Главное меню и запуск"},
+		tgbotapi.BotCommand{Command: "generate", Description: "🎲 Сгенерировать профиль"},
+		tgbotapi.BotCommand{Command: "favorites", Description: "⭐ Избранные персонажи"},
+		tgbotapi.BotCommand{Command: "settings", Description: "⚙️ Настройки стиля и темы"},
+		tgbotapi.BotCommand{Command: "help", Description: "ℹ️ Справка по боту"},
+	)
+	if _, err := bot.Request(cmdConfig); err != nil {
+		log.Printf("ошибка установки команд бота: %v", err)
+	}
+
 	updateConfig := tgbotapi.NewUpdate(0)
 	updateConfig.Timeout = 60
 	updates := bot.GetUpdatesChan(updateConfig)
@@ -402,26 +424,84 @@ func openDB(path string) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("create table: %w", err)
 	}
+
+	// Миграция: колонка с темой пропуска (игнорируем ошибку, если уже существует).
+	_, _ = db.Exec("ALTER TABLE user_settings ADD COLUMN pass_theme TEXT NOT NULL DEFAULT 'cyber'")
+
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS favorites (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id INTEGER NOT NULL,
+			passport TEXT NOT NULL,
+			data TEXT NOT NULL,
+			created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+			UNIQUE(user_id, passport)
+		);
+	`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("create favorites table: %w", err)
+	}
+
 	return db, nil
 }
 
-func handleMessage(bot *tgbotapi.BotAPI, db *sql.DB, message *tgbotapi.Message) {
-	if !message.IsCommand() {
-		if _, err := bot.Send(menuMessage(message.Chat.ID)); err != nil {
-			log.Printf("send menu: %v", err)
-		}
+func handleMessage(bot *tgbotapi.BotAPI, db *sql.DB, msg *tgbotapi.Message) {
+	if msg.Text == "" {
 		return
 	}
 
-	switch strings.ToLower(message.Command()) {
-	case "start", "help":
-		if _, err := bot.Send(menuMessage(message.Chat.ID)); err != nil {
-			log.Printf("send start menu: %v", err)
+	chatID := msg.Chat.ID
+	userID := msg.From.ID
+
+	switch msg.Text {
+	case "/start":
+		welcomeText := "🪖 *Добро пожаловать в Генератор Профилей\\!*\n\n" +
+			"Этот бот создаёт полностью вымышленные личности для игр, ролевых проектов и тестирования:\n" +
+			"• 👤 *ФИО, Позывной и Паспортные данные*\n" +
+			"• 📍 *Город и Группа крови*\n" +
+			"• 🖼 *Уникальный аватар* \\(пиксельный, реалистичный, роботы и др\\.\\)\n" +
+			"• 🎫 *Отрисовка карточки пропуска* по кнопке под анкетой\n\n" +
+			"Нажми *Сгенерировать профиль*, чтобы начать\\!"
+
+		sendMsg := tgbotapi.NewMessage(chatID, welcomeText)
+		sendMsg.ParseMode = tgbotapi.ModeMarkdownV2
+		sendMsg.ReplyMarkup = mainKeyboard()
+		_, _ = bot.Send(sendMsg)
+
+	case "/generate", "🎲 Сгенерировать профиль":
+		generateAndSendProfile(bot, db, chatID, userID)
+
+	case "/settings", "⚙️ Настройки":
+		style, err := getUserStyle(db, userID)
+		if err != nil {
+			log.Printf("get style: %v", err)
+			return
 		}
+		theme, _ := getUserPassTheme(db, userID)
+		sendMsg := tgbotapi.NewMessage(chatID, settingsText(style, theme))
+		sendMsg.ParseMode = tgbotapi.ModeMarkdownV2
+		sendMsg.ReplyMarkup = settingsKeyboard(style, theme)
+		_, _ = bot.Send(sendMsg)
+
+	case "/favorites", "⭐ Избранное":
+		sendFavorites(bot, db, chatID, userID)
+
+	case "/help":
+		helpText := "ℹ️ *Справка*\n\n" +
+			"• `/generate` — сгенерировать новую карточку персонажа\n" +
+			"• `/settings` — выбрать стиль аватара и тему пропуска\n" +
+			"• `/favorites` — список сохранённых персонажей\n" +
+			"• Под каждой карточкой есть кнопка *🎫 Сгенерировать пропуск*, которая создаст график\\-карточку именно для этого персонажа\\."
+
+		sendMsg := tgbotapi.NewMessage(chatID, helpText)
+		sendMsg.ParseMode = tgbotapi.ModeMarkdownV2
+		sendMsg.ReplyMarkup = mainKeyboard()
+		_, _ = bot.Send(sendMsg)
+
 	default:
-		if _, err := bot.Send(menuMessage(message.Chat.ID)); err != nil {
-			log.Printf("send default menu: %v", err)
-		}
+		sendMsg := tgbotapi.NewMessage(chatID, "Используйте кнопки меню или команду /generate.")
+		sendMsg.ReplyMarkup = mainKeyboard()
+		_, _ = bot.Send(sendMsg)
 	}
 }
 
@@ -434,59 +514,139 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, callback *tgbotapi.Callbac
 	chatID := callback.Message.Chat.ID
 	userID := callback.From.ID
 
-	switch callback.Data {
-	case "generate_profile":
-		generateAndSendProfile(bot, db, chatID, userID)
-
-	case "generate_pass":
-		// Получаем сохраненный профиль пользователя
-		profilesMutex.RLock()
-		profile, exists := lastProfiles[userID]
-		profilesMutex.RUnlock()
-
-		if !exists {
-			alert := tgbotapi.NewCallbackWithAlert(callback.ID, "Профиль не найден! Сгенерируйте новый.")
+	switch {
+	// Пропуск для конкретного паспорта
+	case strings.HasPrefix(callback.Data, "pass_"):
+		passport := strings.TrimPrefix(callback.Data, "pass_")
+		profile, ok := getStoredProfile(passport)
+		if !ok {
+			alert := tgbotapi.NewCallbackWithAlert(callback.ID, "Профиль устарел или не найден! Сгенерируйте новый.")
 			_, _ = bot.Request(alert)
 			return
 		}
+		sendPassImage(bot, db, chatID, userID, profile)
+		return
 
-		// Генерируем пропуск в байты
-		passBytes, err := GeneratePassImage(profile)
-		if err != nil {
-			log.Printf("ошибка генерации пропуска: %v", err)
+	// Добавление профиля в избранное
+	case strings.HasPrefix(callback.Data, "fav_"):
+		passport := strings.TrimPrefix(callback.Data, "fav_")
+		profile, ok := getStoredProfile(passport)
+		if !ok {
+			alert := tgbotapi.NewCallbackWithAlert(callback.ID, "Профиль устарел или не найден! Сгенерируйте новый.")
+			_, _ = bot.Request(alert)
 			return
 		}
-
-		// Отправляем готовый пропуск отдельным фото
-		fileBytes := tgbotapi.FileBytes{
-			Name:  "pass.png",
-			Bytes: passBytes,
+		text := "⭐ Добавлено в избранное!"
+		if err := saveFavorite(db, userID, profile); err != nil {
+			log.Printf("save favorite: %v", err)
+			text = "Не удалось сохранить в избранное"
 		}
-		photo := tgbotapi.NewPhoto(chatID, fileBytes)
-		photo.Caption = fmt.Sprintf("🎫 *Пропуск для %s %s*", escapeMD(profile.FirstName), escapeMD(profile.LastName))
-		photo.ParseMode = tgbotapi.ModeMarkdownV2
-		if _, err := bot.Send(photo); err != nil {
-			log.Printf("send pass image error: %v", err)
-		}
+		alert := tgbotapi.NewCallbackWithAlert(callback.ID, text)
+		_, _ = bot.Request(alert)
+		return
 
+	// Пропуск из избранного по id записи
+	case strings.HasPrefix(callback.Data, "favpass_"):
+		id, err := strconv.ParseInt(strings.TrimPrefix(callback.Data, "favpass_"), 10, 64)
+		if err != nil {
+			return
+		}
+		profile, ok := getFavorite(db, userID, id)
+		if !ok {
+			alert := tgbotapi.NewCallbackWithAlert(callback.ID, "Персонаж не найден в избранном.")
+			_, _ = bot.Request(alert)
+			return
+		}
+		sendPassImage(bot, db, chatID, userID, profile)
+		return
+	}
+
+	switch callback.Data {
+	case "generate_profile":
+		generateAndSendProfile(bot, db, chatID, userID)
+	case "favorites":
+		sendFavorites(bot, db, chatID, userID)
 	case "settings":
 		style, err := getUserStyle(db, userID)
 		if err != nil {
 			log.Printf("get style: %v", err)
 			return
 		}
-		sendOrEditMessage(bot, chatID, callback.Message, settingsText(style), settingsKeyboard(style))
+		theme, _ := getUserPassTheme(db, userID)
+		sendOrEditMessage(bot, chatID, callback.Message, settingsText(style, theme), settingsKeyboard(style, theme))
 	case "style_real", "style_pixel", "style_cartoon", "style_robots", "style_initials", "style_boring":
 		style := strings.TrimPrefix(callback.Data, "style_")
 		if err := setUserStyle(db, userID, style); err != nil {
 			log.Printf("set style: %v", err)
 			return
 		}
-		sendOrEditMessage(bot, chatID, callback.Message, settingsText(style), settingsKeyboard(style))
+		theme, _ := getUserPassTheme(db, userID)
+		sendOrEditMessage(bot, chatID, callback.Message, settingsText(style, theme), settingsKeyboard(style, theme))
+	case "theme_cyber", "theme_military", "theme_corp":
+		theme := strings.TrimPrefix(callback.Data, "theme_")
+		if err := setUserPassTheme(db, userID, theme); err != nil {
+			log.Printf("set theme: %v", err)
+			return
+		}
+		style, _ := getUserStyle(db, userID)
+		sendOrEditMessage(bot, chatID, callback.Message, settingsText(style, theme), settingsKeyboard(style, theme))
 	case "back":
 		text := "🪖 *Генератор профилей*\n\nНажми кнопку ниже — бот создаст новый полностью вымышленный профиль\\."
 		sendOrEditMessage(bot, chatID, callback.Message, text, mainKeyboard())
 	}
+}
+
+func sendPassImage(bot *tgbotapi.BotAPI, db *sql.DB, chatID, userID int64, profile Profile) {
+	theme, _ := getUserPassTheme(db, userID)
+
+	passBytes, err := GeneratePassImage(profile, theme)
+	if err != nil {
+		log.Printf("ошибка генерации пропуска: %v", err)
+		return
+	}
+
+	fileBytes := tgbotapi.FileBytes{
+		Name:  "pass.png",
+		Bytes: passBytes,
+	}
+	photo := tgbotapi.NewPhoto(chatID, fileBytes)
+	photo.Caption = fmt.Sprintf("🎫 *Пропуск для %s %s*", escapeMD(profile.FirstName), escapeMD(profile.LastName))
+	photo.ParseMode = tgbotapi.ModeMarkdownV2
+	if _, err := bot.Send(photo); err != nil {
+		log.Printf("send pass image error: %v", err)
+	}
+}
+
+func sendFavorites(bot *tgbotapi.BotAPI, db *sql.DB, chatID, userID int64) {
+	favorites, err := getFavorites(db, userID)
+	if err != nil {
+		log.Printf("get favorites: %v", err)
+		return
+	}
+
+	if len(favorites) == 0 {
+		msg := tgbotapi.NewMessage(chatID, "⭐ *Избранное пусто\\.*\n\nСгенерируйте профиль и нажмите «⭐ В избранное» под карточкой\\.")
+		msg.ParseMode = tgbotapi.ModeMarkdownV2
+		msg.ReplyMarkup = mainKeyboard()
+		_, _ = bot.Send(msg)
+		return
+	}
+
+	rows := make([][]tgbotapi.InlineKeyboardButton, 0, len(favorites)+1)
+	for _, f := range favorites {
+		label := fmt.Sprintf("🎫 %s %s (%s)", f.Profile.LastName, f.Profile.FirstName, f.Profile.Passport)
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(label, "favpass_"+strconv.FormatInt(f.ID, 10)),
+		))
+	}
+	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад", "back"),
+	))
+
+	msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("⭐ *Избранные персонажи* \\(%d\\)\n\nНажмите на персонажа, чтобы получить его пропуск\\.", len(favorites)))
+	msg.ParseMode = tgbotapi.ModeMarkdownV2
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(rows...)
+	_, _ = bot.Send(msg)
 }
 
 func sendOrEditMessage(bot *tgbotapi.BotAPI, chatID int64, message *tgbotapi.Message, text string, markup tgbotapi.InlineKeyboardMarkup) {
@@ -522,47 +682,82 @@ func generateAndSendProfile(bot *tgbotapi.BotAPI, db *sql.DB, chatID, userID int
 
 	profile := generateProfile(style)
 
-	// Сохраняем профиль пользователя в памяти для генерации пропуска
-	profilesMutex.Lock()
-	lastProfiles[userID] = profile
-	profilesMutex.Unlock()
+	// Сохраняем профиль по уникальному номеру паспорта (с TTL)
+	storeProfile(profile)
 
 	caption := formatProfile(profile)
+	keyboard := profileKeyboard(profile.Passport)
 
 	photo := tgbotapi.NewPhoto(chatID, tgbotapi.FileURL(profile.AvatarURL))
 	photo.Caption = caption
 	photo.ParseMode = tgbotapi.ModeMarkdownV2
-	photo.ReplyMarkup = profileKeyboard() // Клавиатура с кнопкой "Сгенерировать пропуск"
+	photo.ReplyMarkup = keyboard
 
 	if _, err := bot.Send(photo); err != nil {
 		log.Printf("send profile photo: %v", err)
 		msg := tgbotapi.NewMessage(chatID, caption)
 		msg.ParseMode = tgbotapi.ModeMarkdownV2
-		msg.ReplyMarkup = profileKeyboard()
+		msg.ReplyMarkup = keyboard
 		if _, sendErr := bot.Send(msg); sendErr != nil {
 			log.Printf("send profile text fallback: %v", sendErr)
 		}
 	}
 }
 
-func menuMessage(chatID int64) tgbotapi.MessageConfig {
-	msg := tgbotapi.NewMessage(chatID, "🪖 *Генератор профилей*\n\nНажми кнопку ниже — бот создаст новый полностью вымышленный профиль\\.")
-	msg.ParseMode = tgbotapi.ModeMarkdownV2
-	msg.ReplyMarkup = mainKeyboard()
-	return msg
+// Хранилище сгенерированных профилей по их номеру паспорта.
+// Записи живут ограниченное время (profileTTL), чтобы не забивать память.
+type storedProfile struct {
+	Profile   Profile
+	CreatedAt time.Time
 }
 
-// Хранилище последних сгенерированных профилей для пользователей
+const profileTTL = 24 * time.Hour
+
 var (
-	profilesMutex sync.RWMutex
-	lastProfiles  = make(map[int64]Profile)
+	profilesMutex  sync.RWMutex
+	storedProfiles = make(map[string]storedProfile)
 )
 
-// Клавиатура, которая прикрепляется к сгенерированному профилю
-func profileKeyboard() tgbotapi.InlineKeyboardMarkup {
+func storeProfile(p Profile) {
+	profilesMutex.Lock()
+	storedProfiles[p.Passport] = storedProfile{Profile: p, CreatedAt: time.Now()}
+	profilesMutex.Unlock()
+}
+
+func getStoredProfile(passport string) (Profile, bool) {
+	profilesMutex.RLock()
+	sp, ok := storedProfiles[passport]
+	profilesMutex.RUnlock()
+	if !ok || time.Since(sp.CreatedAt) > profileTTL {
+		return Profile{}, false
+	}
+	return sp.Profile, true
+}
+
+// startProfileCleaner раз в час удаляет устаревшие профили из памяти.
+func startProfileCleaner() {
+	go func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			cutoff := time.Now().Add(-profileTTL)
+			profilesMutex.Lock()
+			for passport, sp := range storedProfiles {
+				if sp.CreatedAt.Before(cutoff) {
+					delete(storedProfiles, passport)
+				}
+			}
+			profilesMutex.Unlock()
+		}
+	}()
+}
+
+// Клавиатура привязывает кнопку пропуска к конкретному паспорту
+func profileKeyboard(passport string) tgbotapi.InlineKeyboardMarkup {
 	return tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("🎫 Сгенерировать пропуск", "generate_pass"),
+			tgbotapi.NewInlineKeyboardButtonData("🎫 Сгенерировать пропуск", "pass_"+passport),
+			tgbotapi.NewInlineKeyboardButtonData("⭐ В избранное", "fav_"+passport),
 		),
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("🔄 Сгенерировать ещё", "generate_profile"),
@@ -577,14 +772,15 @@ func mainKeyboard() tgbotapi.InlineKeyboardMarkup {
 			tgbotapi.NewInlineKeyboardButtonData("🪪 Сгенерировать профиль", "generate_profile"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("⭐ Избранное", "favorites"),
 			tgbotapi.NewInlineKeyboardButtonData("⚙️ Настройки", "settings"),
 		),
 	)
 }
 
-func settingsKeyboard(style string) tgbotapi.InlineKeyboardMarkup {
-	button := func(text, data, currentStyle string) tgbotapi.InlineKeyboardButton {
-		if currentStyle == style {
+func settingsKeyboard(style, theme string) tgbotapi.InlineKeyboardMarkup {
+	button := func(text, data, current, value string) tgbotapi.InlineKeyboardButton {
+		if current == value {
 			text = "✅ " + text
 		}
 		return tgbotapi.NewInlineKeyboardButtonData(text, data)
@@ -592,16 +788,21 @@ func settingsKeyboard(style string) tgbotapi.InlineKeyboardMarkup {
 
 	return tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
-			button("Реальное лицо", "style_real", styleReal),
-			button("Пиксельный", "style_pixel", stylePixel),
+			button("Реальное лицо", "style_real", style, styleReal),
+			button("Пиксельный", "style_pixel", style, stylePixel),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			button("Мультяшный", "style_cartoon", styleCartoon),
-			button("Роботы", "style_robots", styleRobots),
+			button("Мультяшный", "style_cartoon", style, styleCartoon),
+			button("Роботы", "style_robots", style, styleRobots),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			button("Инициалы", "style_initials", styleInitials),
-			button("Абстрактный", "style_boring", styleBoring),
+			button("Инициалы", "style_initials", style, styleInitials),
+			button("Абстрактный", "style_boring", style, styleBoring),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			button("Cyberpunk", "theme_cyber", theme, themeCyber),
+			button("Military", "theme_military", theme, themeMilitary),
+			button("Corporate", "theme_corp", theme, themeCorp),
 		),
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад", "back"),
@@ -609,7 +810,7 @@ func settingsKeyboard(style string) tgbotapi.InlineKeyboardMarkup {
 	)
 }
 
-func settingsText(style string) string {
+func settingsText(style, theme string) string {
 	current := map[string]string{
 		styleReal:     "📷 Реальное лицо",
 		stylePixel:    "👾 Пиксельный аватар",
@@ -621,7 +822,20 @@ func settingsText(style string) string {
 	if current == "" {
 		current = "👾 Пиксельный аватар"
 	}
-	return fmt.Sprintf("⚙️ *Настройки аватара*\n\nТекущий стиль: *%s*\n\nВыбери стиль для следующей генерации\\.", escapeMD(current))
+
+	currentTheme := map[string]string{
+		themeCyber:    "🌃 Cyberpunk / Neon",
+		themeMilitary: "🪖 Military / Tactical",
+		themeCorp:     "🏢 Corporate / Modern",
+	}[theme]
+	if currentTheme == "" {
+		currentTheme = "🌃 Cyberpunk / Neon"
+	}
+
+	return fmt.Sprintf(
+		"⚙️ *Настройки*\n\nТекущий стиль аватара: *%s*\nТема пропуска: *%s*\n\nВыбери параметры для следующей генерации\\.",
+		escapeMD(current), escapeMD(currentTheme),
+	)
 }
 
 func getUserStyle(db *sql.DB, userID int64) (string, error) {
@@ -651,6 +865,91 @@ func setUserStyle(db *sql.DB, userID int64, style string) error {
 			updated_at = strftime('%s','now')
 	`, userID, style)
 	return err
+}
+
+func getUserPassTheme(db *sql.DB, userID int64) (string, error) {
+	var theme string
+	err := db.QueryRow("SELECT pass_theme FROM user_settings WHERE user_id = ?", userID).Scan(&theme)
+	if err == sql.ErrNoRows {
+		return themeCyber, nil
+	}
+	if err != nil || theme == "" {
+		return themeCyber, err
+	}
+	return theme, nil
+}
+
+func setUserPassTheme(db *sql.DB, userID int64, theme string) error {
+	valid := map[string]bool{themeCyber: true, themeMilitary: true, themeCorp: true}
+	if !valid[theme] {
+		theme = themeCyber
+	}
+	_, err := db.Exec(`
+		INSERT INTO user_settings (user_id, avatar_style, pass_theme, updated_at)
+		VALUES (?, ?, ?, strftime('%s','now'))
+		ON CONFLICT(user_id) DO UPDATE SET
+			pass_theme = excluded.pass_theme,
+			updated_at = strftime('%s','now')
+	`, userID, stylePixel, theme)
+	return err
+}
+
+type favorite struct {
+	ID      int64
+	Profile Profile
+}
+
+func saveFavorite(db *sql.DB, userID int64, p Profile) error {
+	data, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`
+		INSERT INTO favorites (user_id, passport, data, created_at)
+		VALUES (?, ?, ?, strftime('%s','now'))
+		ON CONFLICT(user_id, passport) DO UPDATE SET
+			data = excluded.data,
+			created_at = strftime('%s','now')
+	`, userID, p.Passport, string(data))
+	return err
+}
+
+func getFavorites(db *sql.DB, userID int64) ([]favorite, error) {
+	rows, err := db.Query("SELECT id, data FROM favorites WHERE user_id = ? ORDER BY created_at DESC, id DESC", userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var favorites []favorite
+	for rows.Next() {
+		var (
+			id   int64
+			data string
+		)
+		if err := rows.Scan(&id, &data); err != nil {
+			return nil, err
+		}
+		var p Profile
+		if err := json.Unmarshal([]byte(data), &p); err != nil {
+			continue
+		}
+		favorites = append(favorites, favorite{ID: id, Profile: p})
+	}
+	return favorites, rows.Err()
+}
+
+func getFavorite(db *sql.DB, userID, id int64) (Profile, bool) {
+	var data string
+	err := db.QueryRow("SELECT data FROM favorites WHERE id = ? AND user_id = ?", id, userID).Scan(&data)
+	if err != nil {
+		return Profile{}, false
+	}
+	var p Profile
+	if err := json.Unmarshal([]byte(data), &p); err != nil {
+		return Profile{}, false
+	}
+	return p, true
 }
 
 func generateProfile(style string) Profile {
@@ -1237,17 +1536,91 @@ func escapeCode(s string) string {
 
 // --- Генерация изображения пропуска ---
 
-func GeneratePassImage(p Profile) ([]byte, error) {
-	width, height := 600, 380
+type passTheme struct {
+	bg     color.RGBA
+	header color.RGBA
+	border color.RGBA
+	title  color.RGBA
+	text   color.RGBA
+	muted  color.RGBA
+	accent color.RGBA
+	danger color.RGBA
+	qrFg   color.RGBA
+	qrBg   color.RGBA
+}
+
+func themeColors(theme string) passTheme {
+	switch theme {
+	case themeMilitary:
+		return passTheme{
+			bg:     color.RGBA{42, 48, 34, 255},
+			header: color.RGBA{74, 84, 54, 255},
+			border: color.RGBA{96, 106, 72, 255},
+			title:  color.RGBA{226, 232, 208, 255},
+			text:   color.RGBA{222, 226, 206, 255},
+			muted:  color.RGBA{176, 182, 150, 255},
+			accent: color.RGBA{196, 214, 120, 255},
+			danger: color.RGBA{224, 120, 90, 255},
+			qrFg:   color.RGBA{15, 18, 10, 255},
+			qrBg:   color.RGBA{255, 255, 255, 255},
+		}
+	case themeCorp:
+		return passTheme{
+			bg:     color.RGBA{245, 247, 250, 255},
+			header: color.RGBA{33, 64, 120, 255},
+			border: color.RGBA{200, 208, 218, 255},
+			title:  color.RGBA{255, 255, 255, 255},
+			text:   color.RGBA{30, 38, 50, 255},
+			muted:  color.RGBA{110, 120, 135, 255},
+			accent: color.RGBA{33, 110, 200, 255},
+			danger: color.RGBA{190, 60, 50, 255},
+			qrFg:   color.RGBA{30, 38, 50, 255},
+			qrBg:   color.RGBA{255, 255, 255, 255},
+		}
+	default: // cyber
+		return passTheme{
+			bg:     color.RGBA{12, 14, 26, 255},
+			header: color.RGBA{24, 10, 48, 255},
+			border: color.RGBA{120, 0, 160, 255},
+			title:  color.RGBA{0, 255, 240, 255},
+			text:   color.RGBA{235, 235, 255, 255},
+			muted:  color.RGBA{150, 150, 190, 255},
+			accent: color.RGBA{255, 0, 180, 255},
+			danger: color.RGBA{255, 80, 120, 255},
+			qrFg:   color.RGBA{10, 10, 20, 255},
+			qrBg:   color.RGBA{255, 255, 255, 255},
+		}
+	}
+}
+
+// passFace — TTF-шрифт с поддержкой кириллицы (Go Regular).
+var passFace font.Face
+
+func init() {
+	f, err := opentype.Parse(goregular.TTF)
+	if err != nil {
+		log.Printf("parse font: %v", err)
+		return
+	}
+	face, err := opentype.NewFace(f, &opentype.FaceOptions{Size: 15, DPI: 72, Hinting: font.HintingFull})
+	if err != nil {
+		log.Printf("new face: %v", err)
+		return
+	}
+	passFace = face
+}
+
+func GeneratePassImage(p Profile, theme string) ([]byte, error) {
+	t := themeColors(theme)
+
+	width, height := 660, 420
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
 
-	bgColor := color.RGBA{24, 28, 36, 255}
-	draw.Draw(img, img.Bounds(), &image.Uniform{bgColor}, image.Point{}, draw.Src)
+	draw.Draw(img, img.Bounds(), &image.Uniform{t.bg}, image.Point{}, draw.Src)
+	draw.Draw(img, image.Rect(0, 0, width, 64), &image.Uniform{t.header}, image.Point{}, draw.Src)
+	draw.Draw(img, image.Rect(0, 62, width, 66), &image.Uniform{t.accent}, image.Point{}, draw.Src)
 
-	headerColor := color.RGBA{41, 128, 185, 255}
-	draw.Draw(img, image.Rect(0, 0, width, 55), &image.Uniform{headerColor}, image.Point{}, draw.Src)
-
-	borderColor := color.RGBA{60, 64, 72, 255}
+	borderColor := t.border
 	for x := 0; x < width; x++ {
 		img.Set(x, 0, borderColor)
 		img.Set(x, height-1, borderColor)
@@ -1268,7 +1641,7 @@ func GeneratePassImage(p Profile) ([]byte, error) {
 				defer resp.Body.Close()
 				avatarImg, _, err := image.Decode(resp.Body)
 				if err == nil {
-					avatarRect := image.Rect(25, 80, 185, 240)
+					avatarRect := image.Rect(28, 92, 188, 252)
 					draw.ApproxBiLinear.Scale(img, avatarRect, avatarImg, avatarImg.Bounds(), draw.Over, nil)
 				} else {
 					log.Printf("ошибка декодирования аватара: %v", err)
@@ -1277,19 +1650,35 @@ func GeneratePassImage(p Profile) ([]byte, error) {
 		}
 	}
 
-	drawOutline(img, image.Rect(23, 78, 187, 242), color.RGBA{0, 230, 118, 255}, 2)
+	drawOutline(img, image.Rect(26, 90, 190, 254), t.accent, 2)
 
-	// Все надписи сделаны на латинице, чтобы basicfont мог их корректно отрисовать
-	addText(img, 15, 35, "SECURITY PASS", color.White)
-	addText(img, 420, 35, "ID: "+p.Passport, color.White)
+	// Заголовок
+	addText(img, 24, 40, "SECURITY PASS", t.title)
+	addText(img, 470, 40, "ID: "+p.Passport, t.title)
 
-	addText(img, 210, 100, "NAME: "+transliterate(p.LastName)+" "+transliterate(p.FirstName), color.White)
-	addText(img, 210, 130, "CITY: "+transliterate(p.City), color.RGBA{180, 190, 200, 255})
-	addText(img, 210, 160, "CALLSIGN: "+transliterate(p.Callsign), color.RGBA{255, 215, 0, 255})
-	addText(img, 210, 190, "BLOOD: "+p.Blood, color.RGBA{231, 76, 60, 255})
-	addText(img, 210, 220, "CLEARANCE: LEVEL 3 (RESTRICTED)", color.RGBA{46, 204, 113, 255})
+	// Данные владельца — кириллица теперь отображается корректно
+	addText(img, 212, 118, "ФИО: "+p.LastName+" "+p.FirstName, t.text)
+	addText(img, 212, 150, "ГОРОД: "+p.City, t.muted)
+	addText(img, 212, 182, "ПОЗЫВНОЙ: "+p.Callsign, t.accent)
+	addText(img, 212, 214, "ГРУППА КРОВИ: "+p.Blood, t.danger)
+	addText(img, 212, 246, "ДОСТУП: LEVEL 3 (RESTRICTED)", t.text)
 
-	drawBarcode(img, 25, 280, 550, 60)
+	// Нижний блок: паспорт и QR-код
+	addText(img, 28, 300, "ПАСПОРТ: "+p.Passport, t.muted)
+	addText(img, 28, 328, "ВЫДАН: "+time.Now().Format("02.01.2006"), t.muted)
+	addText(img, 28, 386, "Служба безопасности", t.accent)
+
+	payload, err := json.Marshal(map[string]string{
+		"passport": p.Passport,
+		"name":     p.LastName + " " + p.FirstName,
+		"city":     p.City,
+		"callsign": p.Callsign,
+		"blood":    p.Blood,
+	})
+	if err == nil {
+		drawQRCode(img, 500, 262, 138, string(payload), t.qrFg, t.qrBg)
+		drawOutline(img, image.Rect(490, 252, 648, 410), t.accent, 2)
+	}
 
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, img); err != nil {
@@ -1312,28 +1701,54 @@ func drawOutline(img *image.RGBA, rect image.Rectangle, col color.Color, thickne
 }
 
 func addText(img *image.RGBA, x, y int, label string, col color.Color) {
-	point := fixed.Point26_6{X: fixed.I(x), Y: fixed.I(y)}
+	face := passFace
+	if face == nil {
+		face = basicfont.Face7x13
+	}
 	d := &font.Drawer{
 		Dst:  img,
 		Src:  image.NewUniform(col),
-		Face: basicfont.Face7x13,
-		Dot:  point,
+		Face: face,
+		Dot:  fixed.P(x, y),
 	}
 	d.DrawString(label)
 }
 
-func drawBarcode(img *image.RGBA, x, y, width, height int) {
-	barColor := color.RGBA{240, 240, 240, 255}
-	bgColor := color.RGBA{10, 12, 16, 255}
+// drawQRCode рисует настоящий QR-код с данными профиля.
+// x, y, size задают область самих модулей; вокруг добавляется quiet-zone.
+func drawQRCode(img *image.RGBA, x, y, size int, content string, fg, bg color.Color) {
+	qr, err := qrcode.New(content, qrcode.Medium)
+	if err != nil {
+		log.Printf("qrcode: %v", err)
+		return
+	}
 
-	draw.Draw(img, image.Rect(x, y, x+width, y+height), &image.Uniform{bgColor}, image.Point{}, draw.Src)
+	const pad = 8
+	draw.Draw(img, image.Rect(x-pad, y-pad, x+size+pad, y+size+pad), &image.Uniform{bg}, image.Point{}, draw.Src)
 
-	currX := x + 15
-	for currX < (x + width - 20) {
-		w := rand.Intn(4) + 1
-		if rand.Intn(2) == 1 {
-			draw.Draw(img, image.Rect(currX, y+8, currX+w, y+height-8), &image.Uniform{barColor}, image.Point{}, draw.Src)
+	bitmap := qr.Bitmap()
+	n := len(bitmap)
+	if n == 0 {
+		return
+	}
+
+	cell := float64(size) / float64(n)
+	for row := 0; row < n; row++ {
+		for col := 0; col < n; col++ {
+			if !bitmap[row][col] {
+				continue
+			}
+			x0 := x + int(float64(col)*cell)
+			y0 := y + int(float64(row)*cell)
+			x1 := x + int(float64(col+1)*cell)
+			y1 := y + int(float64(row+1)*cell)
+			if x1 <= x0 {
+				x1 = x0 + 1
+			}
+			if y1 <= y0 {
+				y1 = y0 + 1
+			}
+			draw.Draw(img, image.Rect(x0, y0, x1, y1), &image.Uniform{fg}, image.Point{}, draw.Src)
 		}
-		currX += w + rand.Intn(3) + 1
 	}
 }
