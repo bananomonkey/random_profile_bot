@@ -41,6 +41,8 @@ type Profile struct {
 	House      int
 	Phone      string
 	Username   string
+	Email      string
+	Password   string
 	Passport   string
 	AvatarURL  string
 }
@@ -76,17 +78,26 @@ type randomUserResponse struct {
 
 var nonUsername = regexp.MustCompile(`[^a-zA-Z0-9_]+`)
 
+var cyrToLat = map[rune]string{
+	'а': "a", 'б': "b", 'в': "v", 'г': "g", 'д': "d", 'е': "e", 'ё': "yo",
+	'ж': "zh", 'з': "z", 'и': "i", 'й': "y", 'к': "k", 'л': "l", 'м': "m",
+	'н': "n", 'о': "o", 'п': "p", 'р': "r", 'с': "s", 'т': "t", 'у': "u",
+	'ф': "f", 'х': "kh", 'ц': "ts", 'ч': "ch", 'ш': "sh", 'щ': "sch",
+	'ъ': "", 'ы': "y", 'ь': "", 'э': "e", 'ю': "yu", 'я': "ya",
+}
+
 var (
 	cities = []string{
-		"Москва", "Санкт-Петербург", "Новосибирск", "Екатеринбург", "Казань",
-		"Нижний Новгород", "Челябинск", "Самара", "Омск", "Ростов-на-Дону",
-		"Уфа", "Красноярск", "Пермь", "Воронеж", "Волгоград", "Краснодар",
-		"Саратов", "Тюмень", "Тольятти", "Ижевск", "Барнаул", "Ульяновск",
-		"Иркутск", "Хабаровск", "Ярославль", "Владивосток", "Махачкала", "Томск",
-		"Оренбург", "Кемерово", "Новокузнецк", "Рязань", "Астрахань", "Пенза",
-		"Липецк", "Киров", "Чебоксары", "Тула", "Калининград", "Курск",
-		"Сочи", "Ставрополь", "Белгород", "Брянск", "Владимир", "Архангельск",
-		"Сургут", "Якутск", "Мурманск", "Грозный",
+		"Самосир", "Москва", "Санкт-Петербург", "Новосибирск", "Екатеринбург", "Казань",
+		"Нижний Новгород", "Челябинск", "Самара", "Омск", "Ростов-на-Дону", "Уфа",
+		"Красноярск", "Пермь", "Воронеж", "Волгоград", "Краснодар", "Саратов",
+		"Тюмень", "Тольятти", "Ижевск", "Барнаул", "Ульяновск", "Иркутск",
+		"Хабаровск", "Ярославль", "Владивосток", "Махачкала", "Томск", "Оренбург",
+		"Кемерово", "Новокузнецк", "Рязань", "Астрахань", "Пенза", "Липецк",
+		"Киров", "Чебоксары", "Тула", "Калининград", "Курск", "Сочи",
+		"Ставрополь", "Белгород", "Брянск", "Владимир", "Архангельск", "Сургут",
+		"Якутск", "Мурманск", "Грозный", "Бобруйск", "Урюпинск", "Жмеринка",
+		"Выборг", "Таганрог", "Муром", "Псков", "Великий Новгород", "Смоленск", "Бахмут" , "Симферополь" , "Малая токмачка", "Чернобыль",
 	}
 
 	streets = []string{
@@ -107,8 +118,8 @@ var (
 		"Красноярская", "Омская", "Воронежская", "Саратовская", "Уфимская", "Пермская",
 		"Техническая", "Индустриальная", "Академическая", "Университетская", "Пионерская",
 		"Магистральная", "Шоссейная", "Кольцевая", "Дорожная", "Политехническая", "Рабочая",
-		"Фронтовая", "Героев", "Сиреневая", "Каштановая", "Кленовая", "Луговая",
-		"Озерная", "Горная", "Высокая", "Верхняя", "Нижняя", "Каменская", "Станционная",
+		"Фронтовая", "Героев", "Сиреневая", "Каштановая", "Луговая", "Озерная",
+		"Горная", "Высокая", "Верхняя", "Нижняя", "Каменская", "Станционная",
 	}
 
 	maleNames = []string{
@@ -124,6 +135,14 @@ var (
 		"Виссарион", "Викентий", "Всеволод", "Гордей", "Давид", "Дорофей", "Клим", "Лука",
 		"Мирон", "Прохор", "Родион", "Рустам", "Трофим", "Шамиль", "Ян", "Ефим", "Ираклий",
 		"Альберт", "Вениамин", "Мстислав", "Остап", "Святогор", "Фадей", "Юлиан", "Рудольф",
+		"Яйцеслав", "Акакий", "Ануфрий", "Пантелеймон", "Архип", "Кузьма", "Лукьян",
+		"Поликарп", "Никанор", "Евстигней", "Епифан", "Кондрат", "Герасим", "Спиридон",
+		"Порфирий", "Самсон", "Евдоким", "Нестор", "Парамон", "Савва", "Митрофан",
+		"Гаврила", "Ермолай", "Харлампий", "Михей", "Севастьян", "Илларион", "Галактион",
+		"Венедикт", "Сидор", "Аверьян", "Афанасий", "Лаврентий", "Меркурий", "Пафнутий",
+		"Серафим", "Фома", "Софрон", "Терентий", "Федот", "Гурий", "Климент", "Макарий",
+		"Мефодий", "Вакула", "Корней", "Ермак", "Игнатий", "Наум", "Орест", "Прокофий",
+		"Радион", "Савватий", "Трифон", "Феофан", "Филимон", "Харитон", "Яков", "Яромир",
 	}
 
 	femaleNames = []string{
@@ -136,9 +155,11 @@ var (
 		"София", "Снежана", "Таисия", "Тамара", "Татьяна", "Ульяна", "Фаина", "Юлия",
 		"Яна", "Ярослава", "Агата", "Аделина", "Арина", "Богдана", "Василина", "Веста",
 		"Глафира", "Доминика", "Есения", "Зоряна", "Инна", "Карина", "Клавдия", "Лилия",
-		"Майя", "Мелания", "Нина", "Олеся", "Прасковья", "Рада", "Серафима", "Стефания",
+		"Майя", "Мелания", "Нина", "Прасковья", "Рада", "Серафима", "Стефания",
 		"Элина", "Эмилия", "Эльвира", "Аксинья", "Алевтина", "Белла", "Виолетта", "Дина",
 		"Зоя", "Лиана", "Луиза", "Марта", "Розалия", "Сусанна", "Эвелина", "Элеонора",
+		"Акулина", "Пелагея", "Евдокия", "Фекла", "Устинья", "Матрена", "Аграфена",
+		"Валентина", "Антонина", "Таиса", "Серафима", "Марфа", "Олимпиада", "Ираида",
 	}
 
 	surnames = []string{
@@ -166,24 +187,39 @@ var (
 		"Шевцов", "Шестаков", "Широков", "Шубин", "Щербаков", "Юдин", "Юрьев", "Яковлев",
 		"Якубов", "Алёхин", "Балашов", "Барсуков", "Бессонов", "Буров", "Веденин", "Вершинин",
 		"Доронин", "Кудин", "Левин", "Минин", "Островский", "Панфилов", "Ратников", "Сазонов",
-		"Туманов", "Фокин", "Шувалов", "Гусев", "Кузьмин", "Ларионов", "Кулиш", "Мазур",
-		"Савин", "Сафронов", "Лыткин", "Мороз", "Скориков", "Белкин", "Веденин", "Серов",
+		"Туманов", "Фокин", "Шувалов", "Гусев", "Кузьмин", "Кулиш", "Мазур", "Савин", "Сафронов",
+		"Лыткин", "Мороз", "Скориков", "Белкин", "Серов", "Безруков", "Боярский", "Дроздов",
+		"Дубровский", "Ермаков", "Золотарев", "Казанцев", "Коновалов", "Корнилов", "Лазарев",
+		"Муратов", "Немцов", "Орехов", "Пешков", "Разумовский", "Соловьев", "Тургенев",
 	}
 
 	callsigns = []string{
-		"Гранит", "Седой", "Ворон", "Чекист", "Алтай", "Скиф", "Шаман", "Туман", "Варяг", "Компас",
-		"Струна", "Лютый", "Кремень", "Гром", "Борз", "Маэстро", "Барс", "Тайфун", "Шторм", "Буран",
-		"Ветер", "Север", "Юг", "Восток", "Запад", "Феникс", "Сокол", "Ястреб", "Коршун", "Орёл",
-		"Рысь", "Тигр", "Волк", "Медведь", "Лось", "Бык", "Кабан", "Кедр", "Клён", "Тополь",
-		"Сапсан", "Кобра", "Гюрза", "Удав", "Шершень", "Шмель", "Овод", "Беркут", "Кондор", "Клык",
-		"Коготь", "Бритва", "Молот", "Кувалда", "Нож", "Кремень", "Искра", "Пламя", "Уголь", "Дым",
-		"Гарпун", "Таран", "Резак", "Стилет", "Кинжал", "Пуля", "Залп", "Калибр", "Контур", "Вектор",
-		"Радар", "Сигнал", "Пеленг", "Факел", "Маяк", "Форт", "Бастион", "Редут", "Барьер", "Щит",
-		"Дозор", "Караул", "Скала", "Утёс", "Вершина", "Каньон", "Пик", "Каскад", "Поток", "Прибой",
-		"Риф", "Шельф", "Океан", "Дельта", "Вихрь", "Циклон", "Гроза", "Молния", "Смерч", "Зенит",
-		"Орион", "Кедр", "Тайга", "Полюс", "Ладога", "Байкал", "Енисей", "Дон", "Волга", "Амур",
-		"Дунай", "Талисман", "Карат", "Самородок", "Рубеж", "Курс", "Маркер", "Шифр", "Код", "Призрак",
-		"Тень", "Мираж", "Фантом", "Сфинкс", "Аргумент", "Форсаж", "Драйв", "Титан", "Атлас", "Прометей",
+		// Запрошенные позывные
+		"Фембой", "Нефор", "Кукич", "Дилдак", "Пельмень", "Чебурек", "Огурчик", "Банан",
+		"Кисель", "Тапок", "Хряк", "Шмыга", "Шуруп", "Булка", "Карапуз", "Жирчик", "Пончик",
+		"Колбаса", "Чушпан", "Суета", "Дрель", "Джигурда", "Шнырь", "Шрек", "Груздь",
+		"Сосиска", "Пельмешка", "Борщ", "Тюлень", "Колобок", "Котлета", "Фрикаделька", "Точик",
+
+		// Интернет-мемы и культура
+		"Альтушка", "Скуф", "Тюбик", "Масик", "Чебурашка", "Копатыч", "Чепух", "Шеф",
+		"Гигачад", "Потужный", "Доширак", "Шаурма", "Каблук", "Хомяк", "Телепузик",
+		"Жид", "Шлепа", "Босс", "Чиназес", "База", "Пайп", "Волына", "Батон",
+		"Сухарик", "Ультра-аморал", "Бублик", "Сырник", "Коржик", "Компот", "Степашка", "Лаваш",
+		"Лосик", "Блинчик", "Беляш", "Самса", "Хинкаль", "Вареник", "Шашлык", "Драник",
+		"Кефир", "Сметанец", "Майонез", "Негр", "Душнила", "Инцел", "Всевышний", "Смешарик",
+		"Гой", "Гойда", "Движуха", "СВОйный" , "Соя",
+
+		// Тактические / Классические
+		"Гранит", "Седой", "Ворон", "Чекист", "Алтай", "Скиф", "Шаман", "Туман", "Варяг",
+		"Компас", "Струна", "Лютый", "Кремень", "Гром", "Борз", "Маэстро", "Барс", "Тайфун",
+		"Шторм", "Буран", "Ветер", "Север", "Юг", "Восток", "Запад", "Феникс", "Сокол",
+		"Ястреб", "Коршун", "Орёл", "Рысь", "Тигр", "Волк", "Медведь", "Кедр", "Тополь",
+		"Сапсан", "Кобра", "Гюрза", "Удав", "Шершень", "Шмель", "Беркут", "Кондор", "Клык",
+		"Коготь", "Бритва", "Молот", "Кувалда", "Нож", "Искра", "Пламя", "Уголь", "Дым",
+		"Залп", "Калибр", "Вектор", "Радар", "Сигнал", "Маяк", "Форт", "Редут", "Щит",
+		"Дозор", "Скала", "Утёс", "Пик", "Вихрь", "Циклон", "Гроза", "Молния", "Смерч",
+		"Зенит", "Орион", "Тайга", "Полюс", "Байкал", "Енисей", "Дон", "Волга", "Амур",
+		"Талисман", "Карат", "Рубеж", "Призрак", "Тень", "Мираж", "Фантом", "Титан", "Атлас", "Прометей",
 	}
 
 	bloodTypes = []string{
@@ -196,12 +232,13 @@ var (
 		"bars", "tayfun", "shtorm", "buran", "sokol", "yastreb", "klyak", "molot", "iskra", "druzhina",
 		"sever", "vektor", "radar", "signal", "fort", "redut", "dozor", "skala", "zenit", "orion",
 		"baykal", "amur", "rubey", "marker", "shifr", "titan", "atlas", "fantom", "ten", "prizrak",
+		"femboy", "nefor", "kukich", "dildak", "skuf", "gigachad", "abobus", "shlepa", "chinazes",
 	}
 
 	fatherPatronymics = map[string][2]string{
 		"Александр": {"Александрович", "Александровна"}, "Алексей": {"Алексеевич", "Алексеевна"},
 		"Андрей": {"Андреевич", "Андреевна"}, "Антон": {"Антонович", "Антоновна"},
-		"Аркадий": {"Аркадьевич", "Аркадьевна"}, "Артём": {"Артёмович", "Артёмовна"},
+		"Аркадий": {"Аркадьевич", "Аркадьевна"}, "Артём": {"Артэмович", "Артёмовна"},
 		"Артур": {"Артурович", "Артуровна"}, "Богдан": {"Богданович", "Богдановна"},
 		"Борис": {"Борисович", "Борисовна"}, "Вадим": {"Вадимович", "Вадимовна"},
 		"Валентин": {"Валентинович", "Валентиновна"}, "Валерий": {"Валерьевич", "Валерьевна"},
@@ -243,6 +280,36 @@ var (
 		"Альберт": {"Альбертович", "Альбертовна"}, "Вениамин": {"Вениаминович", "Вениаминовна"},
 		"Мстислав": {"Мстиславович", "Мстиславовна"}, "Остап": {"Остапович", "Остаповна"},
 		"Фадей": {"Фадеевич", "Фадеевна"}, "Рудольф": {"Рудольфович", "Рудольфовна"},
+		"Яйцеслав": {"Яйцеславович", "Яйцеславовна"}, "Акакий": {"Акакиевич", "Акакиевна"},
+		"Ануфрий": {"Ануфриевич", "Ануфриевна"}, "Пантелеймон": {"Пантелеймонович", "Пантелеймоновна"},
+		"Архип": {"Архипович", "Архиповна"}, "Кузьма": {"Кузьмич", "Кузьминична"},
+		"Лукьян": {"Лукьянович", "Лукьяновна"}, "Поликарп": {"Поликарпович", "Поликарповна"},
+		"Никанор": {"Никанорович", "Никаноровна"}, "Евстигней": {"Евстигнеевич", "Евстигнеевна"},
+		"Епифан": {"Епифанович", "Епифановна"}, "Кондрат": {"Кондратович", "Кондратовна"},
+		"Герасим": {"Герасимович", "Герасимовна"}, "Спиридон": {"Спиридонович", "Спиридоновна"},
+		"Порфирий": {"Порфирьевич", "Порфирьевна"}, "Самсон": {"Самсонович", "Самсоновна"},
+		"Евдоким": {"Евдокимович", "Евдокимовна"}, "Нестор": {"Несторович", "Несторовна"},
+		"Парамон": {"Парамонович", "Парамоновна"}, "Савва": {"Саввич", "Саввична"},
+		"Митрофан": {"Митрофанович", "Митрофановна"}, "Гаврила": {"Гаврилович", "Гавриловна"},
+		"Ермолай": {"Ермолаевич", "Ермолаевна"}, "Харлампий": {"Харлампиевич", "Харлампиевна"},
+		"Михей": {"Михеевич", "Михеевна"}, "Севастьян": {"Севастьянович", "Севастьяновна"},
+		"Илларион": {"Илларионович", "Илларионовна"}, "Галактион": {"Галактионович", "Галактионовна"},
+		"Венедикт": {"Венедиктович", "Венедиктовна"}, "Сидор": {"Сидорович", "Сидоровна"},
+		"Аверьян": {"Аверьянович", "Аверьяновна"}, "Афанасий": {"Афанасьевич", "Афанасьевна"},
+		"Лаврентий": {"Лаврентьевич", "Лаврентьевна"}, "Меркурий": {"Меркурьевич", "Меркурьевна"},
+		"Пафнутий": {"Пафнутьевич", "Пафнутьевна"}, "Серафим": {"Серафимович", "Серафимовна"},
+		"Фома": {"Фомич", "Фоминична"}, "Софрон": {"Софронович", "Софроновна"},
+		"Терентий": {"Терентьевич", "Терентьевна"}, "Федот": {"Федотович", "Федотовна"},
+		"Гурий": {"Гурьевич", "Гурьевна"}, "Климент": {"Климентович", "Климентовна"},
+		"Макарий": {"Макарьевич", "Макарьевна"}, "Мефодий": {"Мефодьевич", "Мефодьевна"},
+		"Вакула": {"Вакулович", "Вакуловна"}, "Корней": {"Корнеевич", "Корнеевна"},
+		"Ермак": {"Ермакович", "Ермаковна"}, "Игнатий": {"Игнатьевич", "Игнатьевна"},
+		"Наум": {"Наумович", "Наумовна"}, "Орест": {"Орестович", "Орестовна"},
+		"Прокофий": {"Прокофьевич", "Прокофьевна"}, "Радион": {"Радионович", "Радионовна"},
+		"Савватий": {"Савватьевич", "Савватьевна"}, "Трифон": {"Трифнович", "Трифновна"},
+		"Феофан": {"Феофанович", "Феофановна"}, "Филимон": {"Филимонович", "Филимоновна"},
+		"Харитон": {"Харитонович", "Харитоновна"}, "Яков": {"Яковлевич", "Яковлевна"},
+		"Яромир": {"Яромирович", "Яромировна"},
 	}
 )
 
@@ -288,7 +355,6 @@ func openDB(path string) (*sql.DB, error) {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 
-	// Для маленького Telegram-бота одного соединения достаточно и уменьшает шанс SQLITE_BUSY.
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 
@@ -356,16 +422,7 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, callback *tgbotapi.Callbac
 			log.Printf("get style: %v", err)
 			return
 		}
-		edit := tgbotapi.NewEditMessageTextAndMarkup(
-			chatID,
-			callback.Message.MessageID,
-			settingsText(style),
-			settingsKeyboard(style),
-		)
-		edit.ParseMode = tgbotapi.ModeMarkdownV2
-		if _, err := bot.Send(edit); err != nil {
-			log.Printf("edit settings: %v", err)
-		}
+		sendOrEditMessage(bot, chatID, callback.Message, settingsText(style), settingsKeyboard(style))
 	case "style_real", "style_pixel", "style_cartoon":
 		style := styleReal
 		switch callback.Data {
@@ -378,27 +435,34 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, callback *tgbotapi.Callbac
 			log.Printf("set style: %v", err)
 			return
 		}
-		edit := tgbotapi.NewEditMessageTextAndMarkup(
-			chatID,
-			callback.Message.MessageID,
-			settingsText(style),
-			settingsKeyboard(style),
-		)
-		edit.ParseMode = tgbotapi.ModeMarkdownV2
-		if _, err := bot.Send(edit); err != nil {
-			log.Printf("edit style menu: %v", err)
-		}
+		sendOrEditMessage(bot, chatID, callback.Message, settingsText(style), settingsKeyboard(style))
 	case "back":
-		edit := tgbotapi.NewEditMessageTextAndMarkup(
-			chatID,
-			callback.Message.MessageID,
-			"🪖 *Генератор профилей*\n\nНажми кнопку ниже — бот создаст новый полностью вымышленный профиль\\.",
-			mainKeyboard(),
-		)
-		edit.ParseMode = tgbotapi.ModeMarkdownV2
-		if _, err := bot.Send(edit); err != nil {
-			log.Printf("edit back: %v", err)
+		text := "🪖 *Генератор профилей*\n\nНажми кнопку ниже — бот создаст новый полностью вымышленный профиль\\."
+		sendOrEditMessage(bot, chatID, callback.Message, text, mainKeyboard())
+	}
+}
+
+func sendOrEditMessage(bot *tgbotapi.BotAPI, chatID int64, message *tgbotapi.Message, text string, markup tgbotapi.InlineKeyboardMarkup) {
+	if message != nil && len(message.Photo) > 0 {
+		deleteMsg := tgbotapi.NewDeleteMessage(chatID, message.MessageID)
+		_, _ = bot.Request(deleteMsg)
+
+		msg := tgbotapi.NewMessage(chatID, text)
+		msg.ParseMode = tgbotapi.ModeMarkdownV2
+		msg.ReplyMarkup = markup
+		if _, err := bot.Send(msg); err != nil {
+			log.Printf("send new message error: %v", err)
 		}
+		return
+	}
+
+	edit := tgbotapi.NewEditMessageTextAndMarkup(chatID, message.MessageID, text, markup)
+	edit.ParseMode = tgbotapi.ModeMarkdownV2
+	if _, err := bot.Send(edit); err != nil {
+		msg := tgbotapi.NewMessage(chatID, text)
+		msg.ParseMode = tgbotapi.ModeMarkdownV2
+		msg.ReplyMarkup = markup
+		_, _ = bot.Send(msg)
 	}
 }
 
@@ -419,7 +483,6 @@ func generateAndSendProfile(bot *tgbotapi.BotAPI, db *sql.DB, chatID, userID int
 
 	if _, err := bot.Send(photo); err != nil {
 		log.Printf("send profile photo: %v", err)
-		// Резерв: даже если Telegram не смог забрать изображение по URL, досье не теряется.
 		msg := tgbotapi.NewMessage(chatID, caption)
 		msg.ParseMode = tgbotapi.ModeMarkdownV2
 		msg.ReplyMarkup = mainKeyboard()
@@ -543,7 +606,9 @@ func generateProfile(style string) Profile {
 			}
 
 			phone := normalizeRussianPhone(person.Phone)
-			username := normalizeUsername(person.Username, firstName, lastName)
+			username := generateTGUsername(firstName, lastName)
+			email := randomEmail(username)
+			password := randomPassword()
 
 			p := Profile{
 				FirstName:  firstName,
@@ -559,6 +624,8 @@ func generateProfile(style string) Profile {
 				House:      rand.Intn(178) + 1,
 				Phone:      phone,
 				Username:   username,
+				Email:      email,
+				Password:   password,
 				Passport:   randomPassport(),
 				AvatarURL:  avatarURL(style, male),
 			}
@@ -566,7 +633,6 @@ func generateProfile(style string) Profile {
 		}
 	}
 
-	// Резервный локальный генератор: бот продолжает работать, даже если внешнее API недоступно.
 	return generateLocalProfile(style)
 }
 
@@ -654,16 +720,81 @@ func patronymicForName(first string, male bool) string {
 	return randomPatronymic()[1]
 }
 
-func normalizeUsername(value, firstName, lastName string) string {
-	value = strings.TrimPrefix(strings.TrimSpace(value), "@")
-	value = nonUsername.ReplaceAllString(value, "")
-	if len(value) >= 5 {
-		return "@" + value
+func transliterate(s string) string {
+	var sb strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if lat, ok := cyrToLat[r]; ok {
+			sb.WriteString(lat)
+		} else if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			sb.WriteRune(r)
+		}
+	}
+	return sb.String()
+}
+
+func generateTGUsername(firstName, lastName string) string {
+	fn := transliterate(firstName)
+	ln := transliterate(lastName)
+
+	patterns := []string{}
+
+	if len(fn) >= 3 && len(ln) >= 3 {
+		patterns = append(patterns, fn+"_"+ln)
+		patterns = append(patterns, ln+"_"+fn)
+		patterns = append(patterns, fn+"_"+string(ln[0]))
+		patterns = append(patterns, string(fn[0])+"_"+ln)
 	}
 
-	base := strings.ToLower(firstName + "_" + lastName)
-	base = nonUsername.ReplaceAllString(base, "")
-	return "@" + base + strconv.Itoa(rand.Intn(9000)+1000)
+	if len(fn) >= 3 {
+		patterns = append(patterns, fn+strconv.Itoa(rand.Intn(900)+100))
+		patterns = append(patterns, fn+"_"+strconv.Itoa(rand.Intn(90)+10))
+	}
+
+	if len(ln) >= 3 {
+		patterns = append(patterns, ln+strconv.Itoa(rand.Intn(900)+100))
+		patterns = append(patterns, ln+"_"+strconv.Itoa(rand.Intn(90)+10))
+	}
+
+	word := usernameWords[rand.Intn(len(usernameWords))]
+	patterns = append(patterns, word+"_"+strconv.Itoa(rand.Intn(900)+100))
+
+	username := patterns[rand.Intn(len(patterns))]
+	username = nonUsername.ReplaceAllString(username, "")
+
+	for len(username) < 5 {
+		username += strconv.Itoa(rand.Intn(10))
+	}
+
+	return "@" + strings.ToLower(username)
+}
+
+func randomEmail(username string) string {
+	cleanUser := strings.TrimPrefix(username, "@")
+	domains := []string{"gmail.com", "yandex.ru", "mail.ru", "rambler.ru", "bk.ru", "inbox.ru", "icloud.com"}
+	domain := domains[rand.Intn(len(domains))]
+	return cleanUser + "@" + domain
+}
+
+func randomPassword() string {
+	const (
+		lowerChars   = "abcdefghijklmnopqrstuvwxyz"
+		upperChars   = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+		digitChars   = "0123456789"
+		specialChars = "!@#$%^&*"
+		allChars     = lowerChars + upperChars + digitChars + specialChars
+	)
+	length := rand.Intn(5) + 10
+	b := make([]byte, length)
+	b[0] = lowerChars[rand.Intn(len(lowerChars))]
+	b[1] = upperChars[rand.Intn(len(upperChars))]
+	b[2] = digitChars[rand.Intn(len(digitChars))]
+	b[3] = specialChars[rand.Intn(len(specialChars))]
+
+	for i := 4; i < length; i++ {
+		b[i] = allChars[rand.Intn(len(allChars))]
+	}
+	rand.Shuffle(len(b), func(i, j int) { b[i], b[j] = b[j], b[i] })
+	return string(b)
 }
 
 func normalizeRussianPhone(value string) string {
@@ -709,6 +840,10 @@ func generateLocalProfile(style string) Profile {
 	}
 
 	birthDate, age := randomBirthDate()
+	username := generateTGUsername(firstName, lastName)
+	email := randomEmail(username)
+	password := randomPassword()
+
 	return Profile{
 		FirstName:  firstName,
 		LastName:   lastName,
@@ -722,14 +857,15 @@ func generateLocalProfile(style string) Profile {
 		Street:     streets[rand.Intn(len(streets))],
 		House:      rand.Intn(178) + 1,
 		Phone:      randomPhone(),
-		Username:   randomUsername(),
+		Username:   username,
+		Email:      email,
+		Password:   password,
 		Passport:   randomPassport(),
 		AvatarURL:  avatarURL(style, isMale),
 	}
 }
 
 func feminineSurname(male string) string {
-	// Формы на -ов/-ев/-ин/-ын/-ский/-цкий согласуются с женским полом.
 	switch {
 	case strings.HasSuffix(male, "ов"):
 		return strings.TrimSuffix(male, "ов") + "ова"
@@ -746,7 +882,6 @@ func feminineSurname(male string) string {
 	case strings.HasSuffix(male, "ой"):
 		return strings.TrimSuffix(male, "ой") + "ая"
 	default:
-		// Гайдук, Пархоменко, Руденко, Кулиш и подобные фамилии не изменяются.
 		return male
 	}
 }
@@ -790,12 +925,6 @@ func randomPassport() string {
 	return fmt.Sprintf("%04d %06d", series, number)
 }
 
-func randomUsername() string {
-	word := usernameWords[rand.Intn(len(usernameWords))]
-	n := rand.Intn(9000) + 1000
-	return "@" + word + strconv.Itoa(n)
-}
-
 func randomPatronymic() [2]string {
 	keys := make([]string, 0, len(fatherPatronymics))
 	for name := range fatherPatronymics {
@@ -827,7 +956,7 @@ func avatarURL(style string, male bool) string {
 
 func formatProfile(p Profile) string {
 	return fmt.Sprintf(
-		"🪖 *ЛИЧНОЕ ДОСЬЕ*\n\n"+
+		" *ЛИЧНОЕ ДОСЬЕ*\n\n"+
 			"👤 *ФИО:* %s\n"+
 			"⚧ *Пол:* %s\n"+
 			"🎖 *Позывной:* `%s`\n"+
@@ -835,9 +964,11 @@ func formatProfile(p Profile) string {
 			"🎂 *Дата рождения:* %s\n"+
 			"📅 *Возраст:* %d лет\n"+
 			"📍 *Город:* %s\n"+
-			"🏠 *Адрес:* %s, д\\. %d\n"+ // <-- Исправлено
+			"🏠 *Адрес:* %s, д\\. %d\n"+
 			"📞 *Телефон:* `%s`\n"+
 			"📱 *Username:* `%s`\n"+
+			"📧 *Email:* `%s`\n"+
+			"🔑 *Пароль:* `%s`\n"+
 			"🪪 *Паспорт тестовый:* `%s`\n\n"+
 			"_Все данные в этом профиле синтетические и предназначены только для развлечения, тестов и демонстраций\\._",
 		escapeMD(p.LastName+" "+p.FirstName+" "+p.Patronymic),
@@ -851,6 +982,8 @@ func formatProfile(p Profile) string {
 		p.House,
 		escapeCode(p.Phone),
 		escapeCode(p.Username),
+		escapeCode(p.Email),
+		escapeCode(p.Password),
 		escapeCode(p.Passport),
 	)
 }
