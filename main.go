@@ -19,9 +19,12 @@ import (
 )
 
 const (
-	styleReal    = "real"
-	stylePixel   = "pixel"
-	styleCartoon = "cartoon"
+	styleReal     = "real"
+	stylePixel    = "pixel"
+	styleCartoon  = "cartoon"
+	styleRobots   = "robots"
+	styleInitials = "initials"
+	styleBoring   = "boring"
 
 	fakeNamelyURL = "https://fakenamely.com/api/v1/identity"
 	randomUserURL = "https://randomuser.me/api/"
@@ -44,6 +47,12 @@ type Profile struct {
 	Email      string
 	Password   string
 	Passport   string
+	SNILS      string
+	INN        string
+	CardNumber string
+	CardExpiry string
+	CardCVV    string
+	CardType   string
 	AvatarURL  string
 }
 
@@ -76,6 +85,13 @@ type randomUserResponse struct {
 	} `json:"results"`
 }
 
+type BankCard struct {
+	Number string
+	Expiry string
+	CVV    string
+	Type   string
+}
+
 var nonUsername = regexp.MustCompile(`[^a-zA-Z0-9_]+`)
 
 var cyrToLat = map[rune]string{
@@ -97,7 +113,7 @@ var (
 		"Киров", "Чебоксары", "Тула", "Калининград", "Курск", "Сочи",
 		"Ставрополь", "Белгород", "Брянск", "Владимир", "Архангельск", "Сургут",
 		"Якутск", "Мурманск", "Грозный", "Бобруйск", "Урюпинск", "Жмеринка",
-		"Выборг", "Таганрог", "Муром", "Псков", "Великий Новгород", "Смоленск", "Бахмут" , "Симферополь" , "Малая токмачка", "Чернобыль",
+		"Выборг", "Таганрог", "Муром", "Псков", "Великий Новгород", "Смоленск", "Бахмут", "Симферополь", "Малая токмачка", "Чернобыль",
 	}
 
 	streets = []string{
@@ -194,24 +210,19 @@ var (
 	}
 
 	callsigns = []string{
-		// Запрошенные позывные
 		"Фембой", "Нефор", "Кукич", "Дилдак", "Пельмень", "Чебурек", "Огурчик", "Банан",
 		"Кисель", "Тапок", "Хряк", "Шмыга", "Шуруп", "Булка", "Карапуз", "Жирчик", "Пончик",
 		"Колбаса", "Чушпан", "Суета", "Дрель", "Джигурда", "Шнырь", "Шрек", "Груздь",
 		"Сосиска", "Пельмешка", "Борщ", "Тюлень", "Колобок", "Котлета", "Фрикаделька", "Точик",
-
-		// Интернет-мемы и культура
 		"Альтушка", "Скуф", "Тюбик", "Масик", "Чебурашка", "Копатыч", "Чепух", "Шеф",
 		"Гигачад", "Потужный", "Доширак", "Шаурма", "Каблук", "Хомяк", "Телепузик",
 		"Жид", "Шлепа", "Босс", "Чиназес", "База", "Пайп", "Волына", "Батон",
 		"Сухарик", "Ультра-аморал", "Бублик", "Сырник", "Коржик", "Компот", "Степашка", "Лаваш",
 		"Лосик", "Блинчик", "Беляш", "Самса", "Хинкаль", "Вареник", "Шашлык", "Драник",
 		"Кефир", "Сметанец", "Майонез", "Негр", "Душнила", "Инцел", "Всевышний", "Смешарик",
-		"Гой", "Гойда", "Движуха", "СВОйный" , "Соя",
-
-		// Тактические / Классические
+		"Гой", "Гойда", "Движуха", "СВОйный", "Соя",
 		"Гранит", "Седой", "Ворон", "Чекист", "Алтай", "Скиф", "Шаман", "Туман", "Варяг",
-		"Компас", "Струна", "Лютый", "Кремень", "Гром", "Борз", "Маэстро", "Барс", "Тайфун",
+		"Компас", "Сструна", "Лютый", "Кремень", "Гром", "Борз", "Маэстро", "Барс", "Тайфун",
 		"Шторм", "Буран", "Ветер", "Север", "Юг", "Восток", "Запад", "Феникс", "Сокол",
 		"Ястреб", "Коршун", "Орёл", "Рысь", "Тигр", "Волк", "Медведь", "Кедр", "Тополь",
 		"Сапсан", "Кобра", "Гюрза", "Удав", "Шершень", "Шмель", "Беркут", "Кондор", "Клык",
@@ -373,7 +384,7 @@ func openDB(path string) (*sql.DB, error) {
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS user_settings (
 			user_id INTEGER PRIMARY KEY,
-			avatar_style TEXT NOT NULL DEFAULT 'real',
+			avatar_style TEXT NOT NULL DEFAULT 'pixel',
 			updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 		);
 	`)
@@ -423,14 +434,8 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, callback *tgbotapi.Callbac
 			return
 		}
 		sendOrEditMessage(bot, chatID, callback.Message, settingsText(style), settingsKeyboard(style))
-	case "style_real", "style_pixel", "style_cartoon":
-		style := styleReal
-		switch callback.Data {
-		case "style_pixel":
-			style = stylePixel
-		case "style_cartoon":
-			style = styleCartoon
-		}
+	case "style_real", "style_pixel", "style_cartoon", "style_robots", "style_initials", "style_boring":
+		style := strings.TrimPrefix(callback.Data, "style_")
 		if err := setUserStyle(db, userID, style); err != nil {
 			log.Printf("set style: %v", err)
 			return
@@ -470,7 +475,7 @@ func generateAndSendProfile(bot *tgbotapi.BotAPI, db *sql.DB, chatID, userID int
 	style, err := getUserStyle(db, userID)
 	if err != nil {
 		log.Printf("get style before generation: %v", err)
-		style = styleReal
+		style = stylePixel
 	}
 
 	profile := generateProfile(style)
@@ -521,12 +526,15 @@ func settingsKeyboard(style string) tgbotapi.InlineKeyboardMarkup {
 	return tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			button("Реальное лицо", "style_real", styleReal),
+			button("Пиксельный", "style_pixel", stylePixel),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			button("Пиксельный аватар", "style_pixel", stylePixel),
+			button("Мультяшный", "style_cartoon", styleCartoon),
+			button("Роботы", "style_robots", styleRobots),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			button("Мультяшный / Векторный", "style_cartoon", styleCartoon),
+			button("Инициалы", "style_initials", styleInitials),
+			button("Абстрактный", "style_boring", styleBoring),
 		),
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад", "back"),
@@ -536,9 +544,12 @@ func settingsKeyboard(style string) tgbotapi.InlineKeyboardMarkup {
 
 func settingsText(style string) string {
 	current := map[string]string{
-		styleReal:    "📷 Реальное лицо",
-		stylePixel:   "👾 Пиксельный аватар",
-		styleCartoon: "🎨 Мультяшный / Векторный",
+		styleReal:     "📷 Реальное лицо",
+		stylePixel:    "👾 Пиксельный аватар",
+		styleCartoon:  "🎨 Мультяшный / Векторный",
+		styleRobots:   "🤖 Роботы (Robohash)",
+		styleInitials: "🔤 Инициалы (UI Avatars)",
+		styleBoring:   "🎨 Абстракция (Boring Avatars)",
 	}[style]
 	if current == "" {
 		current = "👾 Пиксельный аватар"
@@ -558,7 +569,11 @@ func getUserStyle(db *sql.DB, userID int64) (string, error) {
 }
 
 func setUserStyle(db *sql.DB, userID int64, style string) error {
-	if style != styleReal && style != stylePixel && style != styleCartoon {
+	valid := map[string]bool{
+		styleReal: true, stylePixel: true, styleCartoon: true,
+		styleRobots: true, styleInitials: true, styleBoring: true,
+	}
+	if !valid[style] {
 		style = stylePixel
 	}
 	_, err := db.Exec(`
@@ -576,6 +591,8 @@ func generateProfile(style string) Profile {
 	if rand.Intn(2) == 1 {
 		genderAPI = "female"
 	}
+
+	card := generateBankCard()
 
 	if person, err := fetchFakePerson(genderAPI); err == nil {
 		firstName := strings.TrimSpace(person.Name.FirstName)
@@ -627,7 +644,13 @@ func generateProfile(style string) Profile {
 				Email:      email,
 				Password:   password,
 				Passport:   randomPassport(),
-				AvatarURL:  avatarURL(style, male),
+				SNILS:      generateSNILS(),
+				INN:        generateINN(),
+				CardNumber: card.Number,
+				CardExpiry: card.Expiry,
+				CardCVV:    card.CVV,
+				CardType:   card.Type,
+				AvatarURL:  avatarURL(style, male, firstName, lastName),
 			}
 			return p
 		}
@@ -822,6 +845,128 @@ func randomDigits(n int) string {
 	return b.String()
 }
 
+// Генератор валидного СНИЛС по контрольной сумме
+func generateSNILS() string {
+	digits := make([]int, 9)
+	for i := 0; i < 9; i++ {
+		digits[i] = rand.Intn(10)
+	}
+
+	sum := 0
+	for i := 0; i < 9; i++ {
+		sum += digits[i] * (9 - i)
+	}
+
+	var checkSum int
+	if sum < 100 {
+		checkSum = sum
+	} else if sum == 100 || sum == 101 {
+		checkSum = 0
+	} else {
+		rem := sum % 101
+		if rem == 100 || rem == 101 {
+			checkSum = 0
+		} else {
+			checkSum = rem
+		}
+	}
+
+	return fmt.Sprintf("%d%d%d-%d%d%d-%d%d%d %02d",
+		digits[0], digits[1], digits[2],
+		digits[3], digits[4], digits[5],
+		digits[6], digits[7], digits[8],
+		checkSum)
+}
+
+// Генератор валидного 12-значного ИНН физического лица
+func generateINN() string {
+	digits := make([]int, 12)
+	regions := []int{77, 50, 78, 16, 61, 23, 66, 52, 36, 54}
+	reg := regions[rand.Intn(len(regions))]
+	digits[0] = reg / 10
+	digits[1] = reg % 10
+
+	for i := 2; i < 10; i++ {
+		digits[i] = rand.Intn(10)
+	}
+
+	mult1 := []int{7, 2, 4, 10, 3, 5, 9, 4, 6, 8}
+	sum1 := 0
+	for i := 0; i < 10; i++ {
+		sum1 += digits[i] * mult1[i]
+	}
+	digits[10] = (sum1 % 11) % 10
+
+	mult2 := []int{3, 7, 2, 4, 10, 3, 5, 9, 4, 6, 8}
+	sum2 := 0
+	for i := 0; i < 11; i++ {
+		sum2 += digits[i] * mult2[i]
+	}
+	digits[11] = (sum2 % 11) % 10
+
+	var sb strings.Builder
+	for _, d := range digits {
+		sb.WriteString(strconv.Itoa(d))
+	}
+	return sb.String()
+}
+
+// Генератор банковских карт по алгоритму Луна
+func generateBankCard() BankCard {
+	types := []string{"МИР", "Visa", "Mastercard"}
+	cardType := types[rand.Intn(len(types))]
+
+	var prefix []int
+	switch cardType {
+	case "МИР":
+		prefix = []int{2, 2, 0, 0}
+	case "Visa":
+		prefix = []int{4}
+	case "Mastercard":
+		prefix = []int{5, 2}
+	}
+
+	digits := make([]int, 16)
+	copy(digits, prefix)
+	for i := len(prefix); i < 15; i++ {
+		digits[i] = rand.Intn(10)
+	}
+
+	sum := 0
+	for i := 0; i < 15; i++ {
+		d := digits[i]
+		if i%2 == 0 {
+			d *= 2
+			if d > 9 {
+				d -= 9
+			}
+		}
+		sum += d
+	}
+	digits[15] = (10 - (sum % 10)) % 10
+
+	var sb strings.Builder
+	for i, d := range digits {
+		if i > 0 && i%4 == 0 {
+			sb.WriteString(" ")
+		}
+		sb.WriteString(strconv.Itoa(d))
+	}
+
+	now := time.Now()
+	expYear := (now.Year() % 100) + rand.Intn(4) + 1
+	expMonth := rand.Intn(12) + 1
+	expiry := fmt.Sprintf("%02d/%02d", expMonth, expYear)
+	cvv := fmt.Sprintf("%03d", rand.Intn(1000))
+
+	return BankCard{
+		Number: sb.String(),
+		Expiry: expiry,
+		CVV:    cvv,
+		Type:   cardType,
+	}
+}
+
 func generateLocalProfile(style string) Profile {
 	isMale := rand.Intn(2) == 0
 	var firstName, lastName, patronymic string
@@ -843,6 +988,7 @@ func generateLocalProfile(style string) Profile {
 	username := generateTGUsername(firstName, lastName)
 	email := randomEmail(username)
 	password := randomPassword()
+	card := generateBankCard()
 
 	return Profile{
 		FirstName:  firstName,
@@ -861,7 +1007,13 @@ func generateLocalProfile(style string) Profile {
 		Email:      email,
 		Password:   password,
 		Passport:   randomPassport(),
-		AvatarURL:  avatarURL(style, isMale),
+		SNILS:      generateSNILS(),
+		INN:        generateINN(),
+		CardNumber: card.Number,
+		CardExpiry: card.Expiry,
+		CardCVV:    card.CVV,
+		CardType:   card.Type,
+		AvatarURL:  avatarURL(style, isMale, firstName, lastName),
 	}
 }
 
@@ -933,13 +1085,20 @@ func randomPatronymic() [2]string {
 	return fatherPatronymics[keys[rand.Intn(len(keys))]]
 }
 
-func avatarURL(style string, male bool) string {
+func avatarURL(style string, male bool, firstName, lastName string) string {
 	seed := fmt.Sprintf("%d-%d", time.Now().UnixNano(), rand.Int63())
 	switch style {
 	case stylePixel:
 		return fmt.Sprintf("https://api.dicebear.com/10.x/pixel-art/png?seed=%s&size=256", url.QueryEscape(seed))
 	case styleCartoon:
 		return fmt.Sprintf("https://api.dicebear.com/10.x/adventurer/png?seed=%s&size=256", url.QueryEscape(seed))
+	case styleRobots:
+		return fmt.Sprintf("https://robohash.org/%s.png?set=set1&size=256x256", url.QueryEscape(seed))
+	case styleInitials:
+		fullName := url.QueryEscape(fmt.Sprintf("%s %s", firstName, lastName))
+		return fmt.Sprintf("https://ui-avatars.com/api/?name=%s&background=random&color=fff&size=256", fullName)
+	case styleBoring:
+		return fmt.Sprintf("https://source.boringavatars.com/beam/256/%s", url.QueryEscape(seed))
 	case styleReal:
 		if u := fetchRealFaceURL(map[bool]string{true: "male", false: "female"}[male]); u != "" {
 			return u
@@ -956,7 +1115,7 @@ func avatarURL(style string, male bool) string {
 
 func formatProfile(p Profile) string {
 	return fmt.Sprintf(
-		" *ЛИЧНОЕ ДОСЬЕ*\n\n"+
+		"🪖 *ЛИЧНОЕ ДОСЬЕ*\n\n"+
 			"👤 *ФИО:* %s\n"+
 			"⚧ *Пол:* %s\n"+
 			"🎖 *Позывной:* `%s`\n"+
@@ -969,7 +1128,11 @@ func formatProfile(p Profile) string {
 			"📱 *Username:* `%s`\n"+
 			"📧 *Email:* `%s`\n"+
 			"🔑 *Пароль:* `%s`\n"+
-			"🪪 *Паспорт тестовый:* `%s`\n\n"+
+			"🪪 *Паспорт:* `%s`\n"+
+			"📜 *СНИЛС:* `%s`\n"+
+			"📑 *ИНН:* `%s`\n"+
+			"💳 *Карта (%s):* `%s`\n"+
+			"⏳ *Срок:* `%s` \\| *CVV:* `%s`\n\n"+
 			"_Все данные в этом профиле синтетические и предназначены только для развлечения, тестов и демонстраций\\._",
 		escapeMD(p.LastName+" "+p.FirstName+" "+p.Patronymic),
 		escapeMD(p.Gender),
@@ -985,6 +1148,12 @@ func formatProfile(p Profile) string {
 		escapeCode(p.Email),
 		escapeCode(p.Password),
 		escapeCode(p.Passport),
+		escapeCode(p.SNILS),
+		escapeCode(p.INN),
+		escapeMD(p.CardType),
+		escapeCode(p.CardNumber),
+		escapeCode(p.CardExpiry),
+		escapeCode(p.CardCVV),
 	)
 }
 
